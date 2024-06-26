@@ -13,18 +13,23 @@ import (
 type ServerRoom struct {
 	connectionMap map[*websocket.Conn]bool
 	sync.RWMutex
+	message chan Message
+}
+type Message struct {
+	connection *websocket.Conn
+	message    string
 }
 
 func (room *ServerRoom) addConnection(ws *websocket.Conn) {
 	room.Lock()
+	defer room.Unlock()
 	room.connectionMap[ws] = true
-	room.Unlock()
 }
 
 func (room *ServerRoom) deleteConnection(ws *websocket.Conn) {
 	room.Lock()
+	defer room.Unlock()
 	delete(room.connectionMap, ws)
-	room.Unlock()
 }
 
 func (room *ServerRoom) connect(ws *websocket.Conn) {
@@ -49,17 +54,21 @@ func (room *ServerRoom) mainLoop(ws *websocket.Conn) {
 			fmt.Println("Error:", err)
 			continue
 		}
-		room.broadcast(buff[:n], ws)
+		room.message <- Message{
+			connection: ws,
+			message:    string(buff[:n]),
+		}
 	}
 }
 
-func (s *ServerRoom) broadcast(message []byte, ws *websocket.Conn) {
+func (s *ServerRoom) broadcast() {
+	message := <-s.message
 	s.RLock()
 	for connection := range s.connectionMap {
-		if connection == ws {
+		if connection == message.connection {
 			continue
 		} else {
-			_, err := connection.Write(message)
+			_, err := connection.Write([]byte(message.message))
 			if err != nil {
 				fmt.Println("Error in writing")
 			}
@@ -76,8 +85,10 @@ func main() {
 
 	server := ServerRoom{
 		connectionMap: make(map[*websocket.Conn]bool),
+		message:       make(chan Message),
 	}
 	http.HandleFunc("/", printHelloWorld)
 	http.Handle("/ws", websocket.Handler(server.connect))
+	go server.broadcast()
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
